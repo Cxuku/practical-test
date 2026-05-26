@@ -3,3 +3,6 @@
 /reports/
 *.log
 composer.lock
+
+.vercel
+.env*
