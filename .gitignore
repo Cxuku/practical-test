@@ -1,8 +1,7 @@
 /vendor/
-/.env
 /reports/
 *.log
-composer.lock
 
-.vercel
+.vercel/
 .env*
+!.env.example
