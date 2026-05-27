@@ -268,11 +268,32 @@ jobs:
           printf "%s\n" "$STATUS_OUTPUT"
           vercel inspect "${{ steps.blue.outputs.preview_url }}" --token="$VERCEL_TOKEN"
 
-      - name: Promote green slot to production
+      - name: Deploy green production slot
         if: steps.deploy-config.outputs.configured == 'true'
+        id: green
         shell: bash
         run: |
-          vercel promote "${{ steps.blue.outputs.preview_url }}" --yes --timeout=5m --token="$VERCEL_TOKEN"
+          set -o pipefail
+
+          vercel deploy \
+            --prod \
+            --yes \
+            --token="$VERCEL_TOKEN" \
+            --env DB_HOST="$DB_HOST" \
+            --env DB_PORT="$DB_PORT" \
+            --env DB_NAME="$DB_NAME" \
+            --env DB_USER="$DB_USER" \
+            --env DB_PASSWORD="$DB_PASSWORD" \
+            2>&1 | tee production-output.txt
+
+          PRODUCTION_URL="$(sed -nE 's/.*(https:\/\/[^[:space:]]+\.vercel\.app).*/\1/p' production-output.txt | tail -n 1)"
+          if [[ ! "$PRODUCTION_URL" =~ ^https:// ]]; then
+            echo "Vercel did not return a production URL."
+            exit 1
+          fi
+
+          echo "production_url=$PRODUCTION_URL" >> "$GITHUB_OUTPUT"
+          echo "Green production deployment is ready at $PRODUCTION_URL"
 
       - name: Verify production health
         if: steps.deploy-config.outputs.configured == 'true'
