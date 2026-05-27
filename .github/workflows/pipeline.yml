@@ -218,6 +218,8 @@ jobs:
         id: blue
         shell: bash
         run: |
+          set -o pipefail
+
           vercel deploy \
             --yes \
             --token="$VERCEL_TOKEN" \
@@ -228,7 +230,11 @@ jobs:
             --env DB_PASSWORD="$DB_PASSWORD" \
             2>&1 | tee deployment-output.txt
 
-          PREVIEW_URL="$(grep -Eo 'https://[^[:space:]]+\.vercel\.app' deployment-output.txt | tail -n 1)"
+          PREVIEW_URL="$(grep -E '^https://[^[:space:]]+\.vercel\.app/?$' deployment-output.txt | tail -n 1)"
+          if [ -z "$PREVIEW_URL" ]; then
+            PREVIEW_URL="$(grep -Eo 'https://[^[:space:]]+\.vercel\.app' deployment-output.txt | tail -n 1)"
+          fi
+
           if [[ ! "$PREVIEW_URL" =~ ^https:// ]]; then
             echo "Vercel did not return a preview URL."
             exit 1
@@ -245,15 +251,15 @@ jobs:
           echo "Blue slot HTTP status: $STATUS"
 
           if [ "$STATUS" != "200" ]; then
-            echo "Smoke test failed; production alias was not changed."
+            echo "Smoke test failed; production was not changed."
             exit 1
           fi
 
-      - name: Promote green slot with production alias
+      - name: Promote green slot to production
         if: steps.deploy-config.outputs.configured == 'true'
         shell: bash
         run: |
-          vercel alias set "${{ steps.blue.outputs.preview_url }}" "$VERCEL_DOMAIN" --token="$VERCEL_TOKEN"
+          vercel promote "${{ steps.blue.outputs.preview_url }}" --yes --timeout=5m --token="$VERCEL_TOKEN"
 
       - name: Verify production health
         if: steps.deploy-config.outputs.configured == 'true'
