@@ -226,12 +226,11 @@ jobs:
             --env DB_NAME="$DB_NAME" \
             --env DB_USER="$DB_USER" \
             --env DB_PASSWORD="$DB_PASSWORD" \
-            > deployment-url.txt
+            2>&1 | tee deployment-output.txt
 
-          PREVIEW_URL="$(tail -n 1 deployment-url.txt)"
+          PREVIEW_URL="$(grep -Eo 'https://[^[:space:]]+\.vercel\.app' deployment-output.txt | tail -n 1)"
           if [[ ! "$PREVIEW_URL" =~ ^https:// ]]; then
             echo "Vercel did not return a preview URL."
-            cat deployment-url.txt
             exit 1
           fi
 
