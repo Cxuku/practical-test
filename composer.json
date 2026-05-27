@@ -1,6 +1,7 @@
 {
     "name": "practical-test/customers",
     "description": "Customer records PHP application - Practical Test 2",
+    "license": "proprietary",
     "type": "project",
     "require": {
         "php": ">=8.1",
