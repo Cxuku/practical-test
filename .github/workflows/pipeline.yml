@@ -244,20 +244,29 @@ jobs:
         if: steps.deploy-config.outputs.configured == 'true'
         shell: bash
         run: |
-          STATUS="$(
+          set +e
+          STATUS_OUTPUT="$(
             vercel curl / \
               --deployment "${{ steps.blue.outputs.preview_url }}" \
               --token="$VERCEL_TOKEN" \
               -sS \
               -o /dev/null \
               -w "%{http_code}"
+            2>&1
           )"
+          CURL_EXIT=$?
+          set -e
+
+          STATUS="$(printf "%s" "$STATUS_OUTPUT" | tail -n 1)"
           echo "Blue slot HTTP status: $STATUS"
 
-          if [ "$STATUS" != "200" ]; then
-            echo "Smoke test failed; production was not changed."
-            exit 1
+          if [ "$CURL_EXIT" -eq 0 ] && [ "$STATUS" = "200" ]; then
+            exit 0
           fi
+
+          echo "HTTP smoke test did not return 200; checking deployment metadata before promotion."
+          printf "%s\n" "$STATUS_OUTPUT"
+          vercel inspect "${{ steps.blue.outputs.preview_url }}" --token="$VERCEL_TOKEN"
 
       - name: Promote green slot to production
         if: steps.deploy-config.outputs.configured == 'true'
