@@ -244,7 +244,14 @@ jobs:
         if: steps.deploy-config.outputs.configured == 'true'
         shell: bash
         run: |
-          STATUS="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "${{ steps.blue.outputs.preview_url }}")"
+          STATUS="$(
+            vercel curl / \
+              --deployment "${{ steps.blue.outputs.preview_url }}" \
+              --token="$VERCEL_TOKEN" \
+              -sS \
+              -o /dev/null \
+              -w "%{http_code}"
+          )"
           echo "Blue slot HTTP status: $STATUS"
 
           if [ "$STATUS" != "200" ]; then
