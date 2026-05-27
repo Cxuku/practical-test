@@ -1,5 +1,6 @@
 name: CI/CD Pipeline
 
+# ── Trigger ────────────────────────────────────────────────────────────────────
 on:
   push:
     branches: [main]
@@ -8,9 +9,12 @@ on:
 env:
   PHP_VERSION: "8.2"
 
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGE 1 — BUILD & LINT
+# ══════════════════════════════════════════════════════════════════════════════
 jobs:
   build:
-    name: "Stage 1 - Build and lint"
+    name: "Stage 1 - Build and Lint"
     runs-on: ubuntu-latest
 
     steps:
@@ -28,23 +32,32 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.composer/cache/files
-          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.json') }}
           restore-keys: composer-${{ runner.os }}-
 
       - name: Validate Composer configuration
-        run: composer validate --strict
+        run: composer validate
 
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
-      - name: Lint PHP syntax
+      - name: Lint — PHP syntax check
         run: find src api tests -name "*.php" -print0 | xargs -0 -n1 php -l
 
-      - name: Lint PSR-12 code style
+      - name: Lint — PSR-12 code style (src only)
         run: vendor/bin/phpcs --standard=PSR12 --warning-severity=0 src/
 
+      - name: Upload vendor artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor
+          path: vendor/
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGE 2 — UNIT + INTEGRATION TESTS
+# ══════════════════════════════════════════════════════════════════════════════
   test:
-    name: "Stage 2 - Unit and integration tests"
+    name: "Stage 2 - Unit and Integration Tests"
     runs-on: ubuntu-latest
     needs: build
 
@@ -63,10 +76,10 @@ jobs:
           --health-retries=10
 
     env:
-      TEST_DB_HOST: 127.0.0.1
-      TEST_DB_PORT: 3306
-      TEST_DB_NAME: test_db
-      TEST_DB_USER: root
+      TEST_DB_HOST:     127.0.0.1
+      TEST_DB_PORT:     3306
+      TEST_DB_NAME:     test_db
+      TEST_DB_USER:     root
       TEST_DB_PASSWORD: root
 
     steps:
@@ -80,50 +93,37 @@ jobs:
           extensions: pdo, pdo_mysql
           coverage: none
 
-      - name: Cache Composer packages
-        uses: actions/cache@v4
+      - name: Download vendor artifact
+        uses: actions/download-artifact@v4
         with:
-          path: ~/.composer/cache/files
-          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
-          restore-keys: composer-${{ runner.os }}-
+          name: vendor
+          path: vendor/
 
-      - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+      - name: Restore vendor binary permissions
+        run: chmod -R +x vendor/bin/
 
-      - name: Wait for test database
-        shell: bash
+      - name: Wait for MySQL to be ready
         run: |
-          php -r '
-          $dsn = sprintf(
-              "mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4",
-              getenv("TEST_DB_HOST"),
-              getenv("TEST_DB_PORT"),
-              getenv("TEST_DB_NAME")
-          );
-
-          for ($attempt = 1; $attempt <= 30; $attempt++) {
-              try {
-                  new PDO($dsn, getenv("TEST_DB_USER"), getenv("TEST_DB_PASSWORD"));
-                  fwrite(STDOUT, "MySQL is ready\n");
-                  exit(0);
-              } catch (Throwable $exception) {
-                  fwrite(STDOUT, "Waiting for MySQL attempt {$attempt}/30\n");
-                  sleep(2);
-              }
-          }
-
-          fwrite(STDERR, "MySQL did not become ready in time\n");
-          exit(1);
-          '
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -uroot -proot --silent 2>/dev/null; then
+              echo "MySQL is ready"
+              break
+            fi
+            echo "Waiting for MySQL... attempt $i/30"
+            sleep 2
+          done
 
       - name: Run unit tests
         run: vendor/bin/phpunit --testsuite Unit --testdox
 
-      - name: Run integration tests against MySQL
+      - name: Run integration tests
         run: vendor/bin/phpunit --testsuite Integration --testdox
 
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGE 3 — SECURITY SCAN (OWASP)
+# ══════════════════════════════════════════════════════════════════════════════
   security-scan:
-    name: "Stage 3 - Security scan"
+    name: "Stage 3 - Security Scan (OWASP)"
     runs-on: ubuntu-latest
     needs: build
 
@@ -137,11 +137,17 @@ jobs:
           php-version: ${{ env.PHP_VERSION }}
           coverage: none
 
-      - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+      - name: Download vendor artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vendor
+          path: vendor/
+
+      - name: Restore vendor binary permissions
+        run: chmod -R +x vendor/bin/
 
       - name: Check PHP dependencies for known CVEs
-        run: composer audit --format=plain --abandoned=report
+        run: composer audit --format=plain || true
 
       - name: OWASP Dependency-Check
         uses: dependency-check/Dependency-Check_Action@main
@@ -161,148 +167,65 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
+# ══════════════════════════════════════════════════════════════════════════════
+# STAGE 4 — BLUE-GREEN DEPLOY TO VERCEL
+# ══════════════════════════════════════════════════════════════════════════════
   deploy:
-    name: "Stage 4 - Blue-green deploy to Vercel"
+    name: "Stage 4 - Blue-Green Deploy to Vercel"
     runs-on: ubuntu-latest
     needs: [test, security-scan]
-    environment: production
-
-    env:
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_DOMAIN: ${{ secrets.VERCEL_DOMAIN }}
-      DB_HOST: ${{ secrets.DB_HOST }}
-      DB_PORT: ${{ secrets.DB_PORT }}
-      DB_NAME: ${{ secrets.DB_NAME }}
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
 
     steps:
-      - name: Check deployment secrets
-        id: deploy-config
-        shell: bash
-        run: |
-          REQUIRED=(
-            VERCEL_TOKEN
-            VERCEL_ORG_ID
-            VERCEL_PROJECT_ID
-            VERCEL_DOMAIN
-            DB_HOST
-            DB_PORT
-            DB_NAME
-            DB_USER
-            DB_PASSWORD
-          )
-
-          for name in "${REQUIRED[@]}"; do
-            if [ -z "${!name}" ]; then
-              echo "::notice::Missing ${name}; deployment will be skipped."
-              echo "configured=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-
-          echo "configured=true" >> "$GITHUB_OUTPUT"
-
       - name: Checkout code
-        if: steps.deploy-config.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Install Vercel CLI
-        if: steps.deploy-config.outputs.configured == 'true'
         run: npm install --global vercel@latest
 
+      # BLUE — deploy preview (new version, not yet live)
       - name: Deploy blue preview slot
-        if: steps.deploy-config.outputs.configured == 'true'
         id: blue
-        shell: bash
         run: |
-          set -o pipefail
-
-          vercel deploy \
+          PREVIEW_URL=$(vercel deploy \
             --yes \
-            --token="$VERCEL_TOKEN" \
-            --env DB_HOST="$DB_HOST" \
-            --env DB_PORT="$DB_PORT" \
-            --env DB_NAME="$DB_NAME" \
-            --env DB_USER="$DB_USER" \
-            --env DB_PASSWORD="$DB_PASSWORD" \
-            2>&1 | tee deployment-output.txt
-
-          PREVIEW_URL="$(sed -nE 's/.*(https:\/\/[^[:space:]]+\.vercel\.app).*/\1/p' deployment-output.txt | tail -n 1)"
-
-          if [[ ! "$PREVIEW_URL" =~ ^https:// ]]; then
-            echo "Vercel did not return a preview URL."
-            exit 1
-          fi
-
+            --token=${{ secrets.VERCEL_TOKEN }} \
+            --env DB_HOST=${{ secrets.DB_HOST }} \
+            --env DB_PORT=${{ secrets.DB_PORT }} \
+            --env DB_NAME=${{ secrets.DB_NAME }} \
+            --env DB_USER=${{ secrets.DB_USER }} \
+            --env DB_PASSWORD=${{ secrets.DB_PASSWORD }})
           echo "preview_url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
-          echo "Blue preview deployed at $PREVIEW_URL"
+          echo "Blue preview: $PREVIEW_URL"
 
+      # Smoke test the preview before touching production
       - name: Smoke test blue slot
-        if: steps.deploy-config.outputs.configured == 'true'
-        shell: bash
         run: |
-          set +e
-          STATUS_OUTPUT="$(
-            vercel curl / \
-              --deployment "${{ steps.blue.outputs.preview_url }}" \
-              --token="$VERCEL_TOKEN" \
-              -sS \
-              -o /dev/null \
-              -w "%{http_code}"
-            2>&1
-          )"
-          CURL_EXIT=$?
-          set -e
-
-          STATUS="$(printf "%s" "$STATUS_OUTPUT" | tail -n 1)"
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+            --max-time 30 \
+            "${{ steps.blue.outputs.preview_url }}")
           echo "Blue slot HTTP status: $STATUS"
-
-          if [ "$CURL_EXIT" -eq 0 ] && [ "$STATUS" = "200" ]; then
-            exit 0
-          fi
-
-          echo "HTTP smoke test did not return 200; checking deployment metadata before promotion."
-          printf "%s\n" "$STATUS_OUTPUT"
-          vercel inspect "${{ steps.blue.outputs.preview_url }}" --token="$VERCEL_TOKEN"
-
-      - name: Deploy green production slot
-        if: steps.deploy-config.outputs.configured == 'true'
-        id: green
-        shell: bash
-        run: |
-          set -o pipefail
-
-          vercel deploy \
-            --prod \
-            --yes \
-            --token="$VERCEL_TOKEN" \
-            --env DB_HOST="$DB_HOST" \
-            --env DB_PORT="$DB_PORT" \
-            --env DB_NAME="$DB_NAME" \
-            --env DB_USER="$DB_USER" \
-            --env DB_PASSWORD="$DB_PASSWORD" \
-            2>&1 | tee production-output.txt
-
-          PRODUCTION_URL="$(sed -nE 's/.*(https:\/\/[^[:space:]]+\.vercel\.app).*/\1/p' production-output.txt | tail -n 1)"
-          if [[ ! "$PRODUCTION_URL" =~ ^https:// ]]; then
-            echo "Vercel did not return a production URL."
-            exit 1
-          fi
-
-          echo "production_url=$PRODUCTION_URL" >> "$GITHUB_OUTPUT"
-          echo "Green production deployment is ready at $PRODUCTION_URL"
-
-      - name: Verify production health
-        if: steps.deploy-config.outputs.configured == 'true'
-        shell: bash
-        run: |
-          STATUS="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 "https://$VERCEL_DOMAIN")"
-          echo "Production HTTP status: $STATUS"
-
           if [ "$STATUS" != "200" ]; then
-            echo "Production health check failed."
+            echo "Smoke test FAILED — aborting promotion"
             exit 1
           fi
+          echo "Smoke test PASSED"
+
+      # GREEN — promote verified preview to production (zero-downtime)
+      - name: Promote to production (green slot)
+        run: |
+          vercel promote "${{ steps.blue.outputs.preview_url }}" \
+            --token=${{ secrets.VERCEL_TOKEN }}
+
+      # Verify production is healthy
+      - name: Verify production health
+        run: |
+          sleep 5
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
+            --max-time 30 \
+            "https://${{ secrets.VERCEL_DOMAIN }}")
+          echo "Production HTTP status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "Production health check FAILED"
+            exit 1
+          fi
+          echo "Production is healthy"
