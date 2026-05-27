@@ -230,10 +230,7 @@ jobs:
             --env DB_PASSWORD="$DB_PASSWORD" \
             2>&1 | tee deployment-output.txt
 
-          PREVIEW_URL="$(grep -E '^https://[^[:space:]]+\.vercel\.app/?$' deployment-output.txt | tail -n 1)"
-          if [ -z "$PREVIEW_URL" ]; then
-            PREVIEW_URL="$(grep -Eo 'https://[^[:space:]]+\.vercel\.app' deployment-output.txt | tail -n 1)"
-          fi
+          PREVIEW_URL="$(sed -nE 's/.*(https:\/\/[^[:space:]]+\.vercel\.app).*/\1/p' deployment-output.txt | tail -n 1)"
 
           if [[ ! "$PREVIEW_URL" =~ ^https:// ]]; then
             echo "Vercel did not return a preview URL."
